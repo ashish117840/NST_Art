@@ -19,6 +19,8 @@ class ImageFolderDataset(Dataset):
     def __len__(self):
         return len(self.files)
 
+    #change
+    
     # def __getitem__(self, idx):
     #     image_path = os.path.join(self.root, self.files[idx])
     #     image = Image.open(image_path).convert('RGB')
