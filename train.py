@@ -12,12 +12,34 @@ from torchvision.utils import save_image
 def parse_arguments():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--content_dir', type=str, default='D:/Apna Collage/AI Proj/NST_CODE/content_data',
-                        help='Location of content dataset')
-    parser.add_argument('--style_dir', type=str, default='D:/Apna Collage/AI Proj/NST_CODE/style_data',
-                        help='Location of style dataset')
-    parser.add_argument('--vgg', type=str, default='D:/Apna Collage/AI Proj/NST_CODE/vgg_normalised.pth',
-                        help='Location of pre-trained VGG')
+    # parser.add_argument('--content_dir', type=str, default='D:/Apna Collage/AI Proj/NST_CODE/content_data',
+    #                     help='Location of content dataset')
+    # parser.add_argument('--style_dir', type=str, default='D:/Apna Collage/AI Proj/NST_CODE/style_data',
+    #                     help='Location of style dataset')
+    # parser.add_argument('--vgg', type=str, default='D:/Apna Collage/AI Proj/NST_CODE/vgg_normalised.pth',
+    #                     help='Location of pre-trained VGG')
+    
+    parser.add_argument(
+        '--content_dir',
+        type=str,
+        default='/kaggle/input/datasets/ashish7000/content-data/content_data',
+        help='Location of content dataset'
+    )
+
+    parser.add_argument(
+        '--style_dir',
+        type=str,
+        default='/kaggle/working/style_data/train_1',
+        help='Location of style dataset'
+    )
+
+    parser.add_argument(
+        '--vgg',
+        type=str,
+        default='/kaggle/working/NST_Code/vgg_normalised.pth',
+        help='Location of pre-trained VGG'
+    )
+    
     parser.add_argument('--experiment', type=str, default='experiment1',
                         help='Name of experiment')
     
@@ -86,11 +108,13 @@ def main():
                                     batch_size=args.batch_size,
                                     shuffle = True,
                                     pin_memory=True,
+                                    num_workers=2,
                                     drop_last=True)
     style_dataloader = DataLoader(style_dateset,
                                   batch_size=args.batch_size,
                                   shuffle=True,
                                   pin_memory=True,
+                                  num_workers=2,
                                   drop_last=True)
     
     print('Number of batches in content dataset: ', len(content_dataloader))
@@ -164,10 +188,12 @@ def main():
             running_sloss += loss_s.item()
         
         scheduler.step()
+        # changed
+        num_batches = min(len(content_dataloader), len(style_dataloader))
 
-        running_loss /= len(content_dataloader)
-        running_closs /= len(content_dataloader)
-        running_sloss /= len(content_dataloader)
+        running_loss /= num_batches
+        running_closs /= num_batches
+        running_sloss /= num_batches
 
         if (epoch+1) % args.log_interval == 0:
             tqdm.write(f'Iter {epoch+1}: Loss:{running_loss:4f}, Content Loss: {running_closs:4f}, Style Loss: {running_sloss:4f}')
