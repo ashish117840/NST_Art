@@ -6,3 +6,11 @@
 __pycache__/
 **/__pycache__/
 *.pyc
+venv/
+__pycache__/
+*.pyc
+uploads/
+content_data/
+style_data/
+*.zip
+.ipynb_checkpoints/
