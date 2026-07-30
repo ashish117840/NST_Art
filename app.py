@@ -1,231 +1,319 @@
 import os
 from pathlib import Path
+from uuid import uuid4
+
+import streamlit as st
 import torch
-from flask import Flask, render_template, request, redirect, url_for, send_from_directory, abort
-from flask_wtf import FlaskForm
-from flask_bootstrap import Bootstrap
-from werkzeug.utils import secure_filename
-from wtforms import FileField, SubmitField, FloatField, HiddenField
-from wtforms.validators import InputRequired
 from PIL import Image
 from torchvision import transforms
 
+from utils.models import Decoder, VGGEncoder
+from utils.utils import adaptive_instance_normalization
 
-# Import your existing AdaIN code
-from utils.models import VGGEncoder, Decoder
-from utils.utils import adaptive_instance_normalization, calc_mean_std
-
-
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'supersecretkey'
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
-app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
-Bootstrap(app)
-
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-
-EXAMPLE_DIRECTORIES = [
-    Path('examples'),
-    Path('Demo_IO_Images'),
-    Path('Demo_IO_Images/i-p'),
-    Path('Demo_IO_Images/o-p'),
-    Path('content_data'),
-    Path('style_data'),
-    Path('static/uploads'),
-    Path('experiment/final_exp'),
-]
-
-EXAMPLE_OUTPUT_SPECS = {
-    'stylized_brad_pitt.jpg': ('brad_pitt.jpg', 'sketch.png'),
-    'stylized_brad_pitt (1).jpg': ('brad_pitt.jpg', 'picasso_seated_nude_hr.jpg'),
-}
-
-EXAMPLE_OUTPUT_DIR = Path(app.config['UPLOAD_FOLDER']) / 'examples'
-
-
-def resolve_example_path(filename):
-    filename = Path(filename).name
-
-    for base_dir in EXAMPLE_DIRECTORIES:
-        candidate = base_dir / filename
-        if candidate.exists() and candidate.is_file():
-            return candidate
-
-    for base_dir in EXAMPLE_DIRECTORIES:
-        for path in base_dir.rglob(filename):
-            if path.is_file():
-                return path
-
-    return None
-
-
-def build_example_output(filename):
-    filename = Path(filename).name
-
-    if filename not in EXAMPLE_OUTPUT_SPECS:
-        return None
-
-    content_name, style_name = EXAMPLE_OUTPUT_SPECS[filename]
-    content_path = resolve_example_path(content_name)
-    style_path = resolve_example_path(style_name)
-
-    if content_path is None or style_path is None:
-        return None
-
-    EXAMPLE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = EXAMPLE_OUTPUT_DIR / filename
-
-    if not output_path.exists():
-        content_image = Image.open(content_path).convert('RGB')
-        style_image = Image.open(style_path).convert('RGB')
-        stylized_image = style_transfer(content_image, style_image, encoder, decoder, 1.0, device)
-        save_image(stylized_image, output_path)
-
-    return output_path
-
-
-class UploadForm(FlaskForm):
-    content = FileField('Content Image')
-    style = FileField('Style Image')
-    content_path = HiddenField()
-    style_path = HiddenField()
-    alpha = FloatField('Alpha', default=1.0)
-    submit = SubmitField('Transfer Style')
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 BASE_DIR = Path(__file__).resolve().parent
-
-encoder = VGGEncoder(BASE_DIR / "vgg_normalised.pth").to(device)
-decoder = Decoder().to(device)
-BASE_DIR = Path(__file__).resolve().parent
-
+UPLOAD_DIR = BASE_DIR / "static" / "uploads"
+CONTENT_EXAMPLE_DIR = BASE_DIR / "Demo_IO_Images" / "i-p"
+STYLE_EXAMPLE_DIR = BASE_DIR / "Demo_IO_Images" / "o-p"
 MODEL_PATH = BASE_DIR / "experiment" / "final_exp" / "decoder_final.pth"
+VGG_PATH = BASE_DIR / "vgg_normalised.pth"
 
-decoder.load_state_dict(
-    torch.load(MODEL_PATH, map_location=device)
-)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-encoder.eval()
-decoder.eval()
 
-torch.set_grad_enabled(False)
+@st.cache_resource(show_spinner=False)
+def load_models():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    encoder = VGGEncoder(str(VGG_PATH)).to(device)
+    decoder = Decoder().to(device)
+    decoder.load_state_dict(torch.load(MODEL_PATH, map_location=device))
 
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+    encoder.eval()
+    decoder.eval()
+    torch.set_grad_enabled(False)
+    return encoder, decoder, device
+
 
 def style_transfer(content_image, style_image, encoder, decoder, alpha, device):
-    IMAGE_SIZE = 256
+    image_size = 256
 
     content_transform = transforms.Compose([
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.ToTensor()
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+    ])
+    style_transform = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
     ])
 
-    style_transform = transforms.Compose([
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.ToTensor()
-    ])
-    content_image = content_transform(content_image).unsqueeze(0).to(device)
-    style_image = style_transform(style_image).unsqueeze(0).to(device)
+    content_tensor = content_transform(content_image).unsqueeze(0).to(device)
+    style_tensor = style_transform(style_image).unsqueeze(0).to(device)
 
     with torch.inference_mode():
-        content_feats = encoder(content_image, is_test=True)
-        style_feats = encoder(style_image, is_test=True)
+        content_feats = encoder(content_tensor, is_test=True)
+        style_feats = encoder(style_tensor, is_test=True)
 
         stylized_feats = adaptive_instance_normalization(content_feats, style_feats)
-
         stylized_feats = alpha * stylized_feats + (1 - alpha) * content_feats
-
         stylized_image = decoder(stylized_feats)
 
     return stylized_image
 
 
 def save_image(image, path):
-    image = image.cpu().clone()
-    image = image.squeeze(0)
+    image = image.detach().cpu().clone().squeeze(0)
     image = image.clamp(0, 1)
-    image = transforms.ToPILImage()(image)
-    image.save(path)
+    pil_image = transforms.ToPILImage()(image)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pil_image.save(path)
 
 
+def list_image_files(folder):
+    if not folder.exists():
+        return []
+    return sorted(
+        [path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg"}]
+    )
 
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    form = UploadForm()
-    result_image = None
-    content_filename = None
-    style_filename = None
-    error = None
-    submitted = request.method == 'POST'
 
-    if form.validate_on_submit():
-        if form.content.data and form.content.data.filename:
-            if allowed_file(form.content.data.filename):
-                content_filename = secure_filename(form.content.data.filename)
-                form.content.data.save(os.path.join(app.config['UPLOAD_FOLDER'], content_filename))
-                form.content_path.data = content_filename
+def load_pil_image(path_or_file):
+    if isinstance(path_or_file, (str, Path)):
+        with Image.open(path_or_file) as img:
+            return img.convert("RGB")
+
+    if path_or_file is None:
+        return None
+
+    image = Image.open(path_or_file)
+    return image.convert("RGB")
+
+
+def main():
+    st.set_page_config(page_title="Neural Style Transfer", page_icon="🎨", layout="wide")
+
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background: linear-gradient(rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0.98)),
+                        url('https://images.unsplash.com/photo-1620641788421-7a1c342ea42e?q=80&w=1974&auto=format&fit=crop');
+            background-size: cover;
+            background-attachment: fixed;
+            background-position: center;
+            color: #e2e8f0;
+        }
+        .block-container {
+            padding-top: 1.5rem;
+            padding-bottom: 4rem;
+            max-width: 1400px;
+        }
+        .hero {
+            text-align: center;
+            padding: 3rem 0 2rem;
+        }
+        .hero h1 {
+            font-family: 'Orbitron', 'Segoe UI', sans-serif;
+            font-size: 3rem;
+            font-weight: 700;
+            background: linear-gradient(90deg, #818cf8, #c084fc, #f472b6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+        .hero p {
+            color: #cbd5e1;
+            font-size: 1.1rem;
+            max-width: 700px;
+            margin: 0 auto;
+        }
+        .card {
+            background: rgba(30, 41, 59, 0.7);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 18px;
+            padding: 1.2rem;
+            box-shadow: 0 20px 45px -20px rgba(0,0,0,0.55);
+            backdrop-filter: blur(12px);
+            margin-bottom: 1rem;
+        }
+        .card h3, .card h4 {
+            font-family: 'Orbitron', 'Segoe UI', sans-serif;
+            color: #f8fafc;
+            margin-bottom: 0.5rem;
+        }
+        .card .stImage img {
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: #0f172a;
+        }
+        div[data-testid="stSidebar"] {
+            background: rgba(15, 23, 42, 0.85);
+            border-right: 1px solid rgba(255,255,255,0.08);
+        }
+        .stButton > button {
+            background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+            color: white;
+            border: none;
+            border-radius: 999px;
+            padding: 0.7rem 1.2rem;
+            font-weight: 600;
+        }
+        .stButton > button:hover {
+            box-shadow: 0 10px 20px -10px rgba(168, 85, 247, 0.7);
+        }
+        .preview-box {
+            min-height: 320px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #94a3b8;
+            border: 2px dashed #334155;
+            border-radius: 12px;
+            background: rgba(15, 23, 42, 0.7);
+            padding: 1rem;
+        }
+        .result-box {
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 16px;
+            padding: 1rem;
+            background: rgba(5, 150, 105, 0.15);
+        }
+        .example-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1rem;
+        }
+        .example-item {
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 14px;
+            padding: 0.8rem;
+        }
+        .example-item img {
+            border-radius: 10px;
+            width: 100%;
+            height: 180px;
+            object-fit: contain;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="hero">
+            <h1>STYLEFORGE AI</h1>
+            <p>Redefine Reality with AI-Powered Artistry</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    encoder, decoder, device = load_models()
+
+    content_examples = list_image_files(CONTENT_EXAMPLE_DIR)
+    style_examples = list_image_files(STYLE_EXAMPLE_DIR)
+
+    with st.sidebar:
+        st.markdown("<h3 style='color:#f8fafc;'>Inputs</h3>", unsafe_allow_html=True)
+        content_source = st.radio("Content image source", ["Upload", "Example"], horizontal=True)
+        if content_source == "Upload":
+            content_file = st.file_uploader("Choose content image", type=["png", "jpg", "jpeg"])
+            selected_content = None
         else:
-            content_filename = form.content_path.data
+            content_file = None
+            selected_content = st.selectbox(
+                "Choose a content example",
+                content_examples or [None],
+                format_func=lambda path: path.name if path else "No example found",
+            )
 
-        if form.style.data and form.style.data.filename:
-            if allowed_file(form.style.data.filename):
-                style_filename = secure_filename(form.style.data.filename)
-                form.style.data.save(os.path.join(app.config['UPLOAD_FOLDER'], style_filename))
-                form.style_path.data = style_filename
+        style_source = st.radio("Style image source", ["Upload", "Example"], horizontal=True, key="style_source")
+        if style_source == "Upload":
+            style_file = st.file_uploader("Choose style image", type=["png", "jpg", "jpeg"], key="style_upload")
+            selected_style = None
         else:
-            style_filename = form.style_path.data
+            style_file = None
+            selected_style = st.selectbox(
+                "Choose a style example",
+                style_examples or [None],
+                format_func=lambda path: path.name if path else "No example found",
+                key="style_example",
+            )
 
-        if content_filename and style_filename:
-            content_path = os.path.join(app.config['UPLOAD_FOLDER'], content_filename)
-            style_path = os.path.join(app.config['UPLOAD_FOLDER'], style_filename)
-            
-            try:
-                content_image = Image.open(content_path).convert('RGB')
-                style_image = Image.open(style_path).convert('RGB')
+        alpha = st.slider("Blend strength", 0.0, 1.0, 1.0, 0.05)
+        run_button = st.button("Generate stylized image", use_container_width=True)
 
-                alpha = float(form.alpha.data)
+    if content_source == "Upload":
+        content_image = load_pil_image(content_file)
+    else:
+        content_image = load_pil_image(selected_content) if selected_content else None
+
+    if style_source == "Upload":
+        style_image = load_pil_image(style_file)
+    else:
+        style_image = load_pil_image(selected_style) if selected_style else None
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown('<div class="card"><h3>Content Source</h3></div>', unsafe_allow_html=True)
+        if content_image is not None:
+            st.image(content_image, width=700)
+        else:
+            st.markdown('<div class="preview-box">Select a content image</div>', unsafe_allow_html=True)
+
+    with col2:
+        st.markdown('<div class="card"><h3>Style Reference</h3></div>', unsafe_allow_html=True)
+        if style_image is not None:
+            st.image(style_image, width=700)
+        else:
+            st.markdown('<div class="preview-box">Select a style image</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card"><h3 style="text-align:center;">Style Strength</h3></div>', unsafe_allow_html=True)
+    st.slider("", 0.0, 1.0, alpha, 0.05, key="alpha_display")
+
+    if run_button:
+        if content_image is None or style_image is None:
+            st.error("Please provide both a content image and a style image.")
+        else:
+            with st.spinner("Applying style transfer..."):
                 stylized_image = style_transfer(content_image, style_image, encoder, decoder, alpha, device)
 
-                result_filename = 'stylized_' + content_filename
-                result_path = os.path.join(app.config['UPLOAD_FOLDER'], result_filename)
-                save_image(stylized_image, result_path)
-                
-                result_image = result_filename
-            except Exception as e:
-                error = str(e)
-    elif submitted:
-        if not (form.content.data and form.content.data.filename) and not form.content_path.data:
-            error = 'Please upload content image'
-        elif not (form.style.data and form.style.data.filename) and not form.style_path.data:
-            error = 'Please upload style image'
+            output_path = UPLOAD_DIR / f"stylized_{uuid4().hex[:8]}.png"
+            save_image(stylized_image, output_path)
 
-    return render_template('index.html', form=form, result_image=result_image, content_image=content_filename,
-                           style_image=style_filename, error=error)
+            st.markdown('<div class="card"><h3>Stylized Result</h3></div>', unsafe_allow_html=True)
+            st.image(output_path, width=700)
+            with open(output_path, "rb") as output_file:
+                st.download_button(
+                    "Download result",
+                    output_file,
+                    file_name=output_path.name,
+                    mime="image/png",
+                )
+
+    st.markdown('<div class="card"><h3>Examples</h3></div>', unsafe_allow_html=True)
+    example_cols = st.columns(2)
+    for idx, col in enumerate(example_cols):
+        with col:
+            st.markdown('<div class="example-item">', unsafe_allow_html=True)
+            if idx == 0 and content_examples:
+                st.image(content_examples[0], caption="Content example")
+            elif idx == 1 and style_examples:
+                st.image(style_examples[0], caption="Style example")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card"><h3>FAQ</h3></div>', unsafe_allow_html=True)
+    with st.expander("1. Is it a pretrained model?"):
+        st.write("No, we train a model ourselves.")
+    with st.expander("2. Is it a free platform?"):
+        st.write("This demo is currently available as a free experience.")
+    with st.expander("3. Which styles of painting can be used?"):
+        st.write("You can use almost any painting style image as the style reference.")
 
 
-@app.route('/uploads/<filename>')
-def send_image(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
-
-@app.route('/examples/<path:filename>')
-def send_example(filename):
-    generated_output = build_example_output(filename)
-    if generated_output is not None:
-        return send_from_directory(generated_output.parent, generated_output.name)
-
-    file_path = resolve_example_path(filename)
-    if file_path is None:
-        abort(404)
-    return send_from_directory(file_path.parent, file_path.name)
-
-
-if __name__ == '__main__':
-    from werkzeug.serving import run_simple
-    run_simple('localhost', 5000, app, use_reloader=True, use_debugger=True)
+if __name__ == "__main__":
+    main()
 
 
 
