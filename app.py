@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import streamlit as st
 import torch
-from PIL import Image
+from PIL import Image, ImageOps
 from torchvision import transforms
 
 from utils.models import Decoder, VGGEncoder
@@ -34,15 +34,27 @@ def load_models():
     return encoder, decoder, device
 
 
+def resize_image_for_model(image, target_size=512):
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    width, height = image.size
+    scale = target_size / max(width, height)
+    new_width = max(1, int(round(width * scale)))
+    new_height = max(1, int(round(height * scale)))
+    return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+
 def style_transfer(content_image, style_image, encoder, decoder, alpha, device):
-    image_size = 256
+    image_size = 512
+
+    content_image = resize_image_for_model(content_image, target_size=image_size)
+    style_image = resize_image_for_model(style_image, target_size=image_size)
 
     content_transform = transforms.Compose([
-        transforms.Resize((image_size, image_size)),
+        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),
     ])
     style_transform = transforms.Compose([
-        transforms.Resize((image_size, image_size)),
+        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),
     ])
 
@@ -64,6 +76,7 @@ def save_image(image, path):
     image = image.detach().cpu().clone().squeeze(0)
     image = image.clamp(0, 1)
     pil_image = transforms.ToPILImage()(image)
+    pil_image = pil_image.resize((1024, 1024), Image.Resampling.LANCZOS)
     path.parent.mkdir(parents=True, exist_ok=True)
     pil_image.save(path)
 
