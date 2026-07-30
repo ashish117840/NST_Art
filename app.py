@@ -9,7 +9,7 @@ from wtforms import FileField, SubmitField, FloatField, HiddenField
 from wtforms.validators import InputRequired
 from PIL import Image
 from torchvision import transforms
-import io
+
 
 # Import your existing AdaIN code
 from utils.models import VGGEncoder, Decoder
@@ -94,31 +94,43 @@ class UploadForm(FlaskForm):
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-encoder = VGGEncoder('vgg_normalised.pth').to(device)
+BASE_DIR = Path(__file__).resolve().parent
+
+encoder = VGGEncoder(BASE_DIR / "vgg_normalised.pth").to(device)
 decoder = Decoder().to(device)
-decoder.load_state_dict(torch.load('D:/Apna Collage/AI Proj/NST_CODE/experiment/final_exp/decoder_final.pth', map_location=device))
+BASE_DIR = Path(__file__).resolve().parent
+
+MODEL_PATH = BASE_DIR / "experiment" / "final_exp" / "decoder_final.pth"
+
+decoder.load_state_dict(
+    torch.load(MODEL_PATH, map_location=device)
+)
 
 encoder.eval()
 decoder.eval()
+
+torch.set_grad_enabled(False)
 
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 def style_transfer(content_image, style_image, encoder, decoder, alpha, device):
+    IMAGE_SIZE = 256
+
     content_transform = transforms.Compose([
-        transforms.Resize(512),
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.ToTensor()
     ])
 
     style_transform = transforms.Compose([
-        transforms.Resize(512),
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.ToTensor()
     ])
     content_image = content_transform(content_image).unsqueeze(0).to(device)
     style_image = style_transform(style_image).unsqueeze(0).to(device)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         content_feats = encoder(content_image, is_test=True)
         style_feats = encoder(style_image, is_test=True)
 
