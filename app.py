@@ -115,6 +115,29 @@ def main():
             background-position: center;
             color: #e2e8f0;
         }
+        header[data-testid="stHeader"],
+        header[data-testid="stHeader"] > div,
+        div[data-testid="stToolbar"] {
+            background: transparent !important;
+            box-shadow: none !important;
+            border: 0 !important;
+        }
+        header[data-testid="stHeader"] {
+            height: 0 !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+        }
+        header[data-testid="stHeader"] > div {
+            height: 0 !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+        }
+        button[data-testid="stExpandSidebarButton"] {
+            position: fixed !important;
+            top: 0.85rem !important;
+            left: 0.75rem !important;
+            z-index: 1000 !important;
+        }
         .block-container {
             padding-top: 1.5rem;
             padding-bottom: 4rem;
@@ -157,6 +180,13 @@ def main():
             border-radius: 12px;
             border: 1px solid rgba(255,255,255,0.15);
             background: #0f172a;
+        }
+        div[data-testid="stToolbarActions"],
+        div[data-testid="stAppDeployButton"],
+        button[data-testid="stMainMenuButton"],
+        div[data-testid="stDecoration"],
+        footer {
+            display: none !important;
         }
         div[data-testid="stSidebar"] {
             background: rgba(15, 23, 42, 0.85);
